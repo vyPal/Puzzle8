@@ -1,7 +1,19 @@
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{HashSet, VecDeque},
+    sync::Arc,
 };
+
+use crossbeam::atomic::AtomicCell;
+use rand::prelude::SliceRandom;
+
+use gtk::{
+    glib::{self, clone},
+    prelude::*,
+    Application, ApplicationWindow, Button,
+};
+use tokio::sync::mpsc;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct State {
@@ -222,6 +234,56 @@ fn solve_astar(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     panic!("No solution found");
 }
 
+async fn solve_astar_live(
+    board: [[u8; 3]; 3],
+    channel: mpsc::UnboundedSender<(State, Vec<Move>, u32)>,
+) {
+    let mut heap = std::collections::BinaryHeap::new();
+    let mut visited = HashSet::new();
+    let mut nodes_visited = 0;
+
+    let start = State::new(board);
+    heap.push(Node {
+        state: start.clone(),
+        cost: 0,
+        heuristic: manhattan_distance(start.board),
+        moves: Vec::new(),
+    });
+    visited.insert(start);
+
+    while let Some(Node {
+        state,
+        cost,
+        heuristic: _,
+        moves,
+    }) = heap.pop()
+    {
+        nodes_visited += 1;
+        let _ = channel
+            .send((state.clone(), moves.clone(), nodes_visited))
+            .unwrap();
+        if state.is_goal() {
+            eprintln!("Nodes visited: {}", nodes_visited);
+            return;
+        }
+        for (neighbor, mv) in state.get_neighbors() {
+            if !visited.contains(&neighbor) {
+                let mut new_moves = moves.clone();
+                new_moves.push(mv);
+                heap.push(Node {
+                    state: neighbor.clone(),
+                    cost: cost + 1,
+                    heuristic: manhattan_distance(neighbor.board),
+                    moves: new_moves,
+                });
+                visited.insert(neighbor);
+            }
+        }
+    }
+
+    panic!("No solution found");
+}
+
 fn is_solvable(board: [[u8; 3]; 3]) -> bool {
     let mut inversions = 0;
     let mut flat_board = Vec::new();
@@ -240,13 +302,142 @@ fn is_solvable(board: [[u8; 3]; 3]) -> bool {
     inversions % 2 == 0
 }
 
-fn main() {
-    let board = [[5, 1, 4], [3, 8, 2], [6, 7, 0]];
-
-    if !is_solvable(board) {
-        println!("The puzzle is not solvable");
-        return;
+fn is_solvable_flat(board: [u8; 9]) -> bool {
+    let mut inversions = 0;
+    for i in 0..8 {
+        for j in i + 1..9 {
+            if board[i] != 0 && board[j] != 0 && board[i] > board[j] {
+                inversions += 1;
+            }
+        }
     }
+    inversions % 2 == 0
+}
 
-    let (_, _, _) = solve_astar(board);
+#[tokio::main]
+async fn main() -> glib::ExitCode {
+    let app = Application::builder()
+        .application_id("me.vypal.puzzle8")
+        .build();
+
+    app.connect_activate(|app| {
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("Puzzle 8 Solver")
+            .default_width(350)
+            .default_height(70)
+            .build();
+
+        let scroll_area = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .build();
+
+        let grid = gtk::Grid::builder()
+            .row_spacing(5)
+            .column_spacing(5)
+            .build();
+
+        let vbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(5)
+            .build();
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<(State, Vec<Move>, u32)>();
+
+        let board = Arc::new(AtomicCell::new([[1, 2, 3], [4, 5, 6], [7, 8, 0]]));
+
+        let _ = tx
+            .send((State::new(board.load()).clone(), Vec::new(), 0))
+            .unwrap();
+
+        glib::spawn_future_local(clone!(
+            #[weak]
+            grid,
+            #[weak]
+            window,
+            async move {
+                while !rx.is_closed() {
+                    let mut buf = Vec::with_capacity(100);
+                    rx.recv_many(&mut buf, 100).await;
+                    let (state, moves, nodes_visited) = buf.into_iter().last().unwrap();
+
+                    let label = gtk::Label::new(Some(&format!("Nodes visited: {}", nodes_visited)));
+                    grid.remove_column(3);
+                    grid.remove_row(3);
+                    grid.remove_row(2);
+                    grid.remove_row(1);
+                    grid.remove_row(0);
+
+                    grid.attach(&label, 0, 0, 1, 1);
+                    for (i, row) in state.board.iter().enumerate() {
+                        for (j, cell) in row.iter().enumerate() {
+                            let button = Button::builder().label(&cell.to_string()).build();
+                            grid.attach(&button, j as i32, i as i32 + 1, 1, 1);
+                        }
+                    }
+                    for (i, mv) in moves.iter().enumerate() {
+                        let label = gtk::Label::new(Some(&format!("{}) {:?}", i + 1, mv)));
+                        grid.attach(&label, 3, i as i32 + 1, 1, 1);
+                    }
+
+                    window.present();
+                }
+            }
+        ));
+
+        let run_button = Button::builder().label("Run").hexpand(true).build();
+
+        let tx_clone = tx.clone();
+        let board_clone = board.clone();
+        run_button.connect_clicked(clone!(
+            #[weak]
+            grid,
+            #[weak]
+            window,
+            move |_| {
+                let tx = tx_clone.clone();
+                let board = board_clone.clone();
+                if is_solvable(board.load()) {
+                    let tx = tx.clone();
+                    let value = board.load();
+                    tokio::spawn(async move {
+                        solve_astar_live(value, tx).await;
+                    });
+                } else {
+                    let label = gtk::Label::new(Some("Unsolvable board"));
+                    grid.attach(&label, 0, 0, 1, 1);
+                    window.present();
+                }
+            }
+        ));
+
+        let randomzie_button = Button::builder().label("Randomize").hexpand(true).build();
+
+        randomzie_button.connect_clicked(move |_| {
+            let b = board.load();
+            let mut b = [
+                b[0][0], b[0][1], b[0][2], b[1][0], b[1][1], b[1][2], b[2][0], b[2][1], b[2][2],
+            ];
+
+            b.shuffle(&mut rand::rng());
+            while !is_solvable_flat(b) {
+                b.shuffle(&mut rand::rng());
+            }
+            board.store([[b[0], b[1], b[2]], [b[3], b[4], b[5]], [b[6], b[7], b[8]]]);
+            let _ = tx
+                .send((State::new(board.load()).clone(), Vec::new(), 0))
+                .unwrap();
+        });
+
+        vbox.append(&run_button);
+        vbox.append(&randomzie_button);
+        vbox.append(&grid);
+        scroll_area.set_child(Some(&vbox));
+        window.set_child(Some(&scroll_area));
+
+        window.present();
+    });
+
+    app.run()
 }
