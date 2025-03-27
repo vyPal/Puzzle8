@@ -8,6 +8,7 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use rand::prelude::SliceRandom;
 
+#[cfg(feature = "gui")]
 use gtk::{
     glib::{self, clone},
     prelude::*,
@@ -15,7 +16,7 @@ use gtk::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct State {
     board: [[u8; 3]; 3],
     zero: (u8, u8),
@@ -138,6 +139,7 @@ fn manhattan_distance(board: [[u8; 3]; 3]) -> u32 {
 }
 
 fn solve_bfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
+    println!("Solving using bfs...");
     let mut queue = VecDeque::new();
     let mut visited = HashSet::new();
     let mut nodes_visited = 0;
@@ -165,6 +167,7 @@ fn solve_bfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
 }
 
 fn solve_dfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
+    println!("Solving using dfs...");
     let mut stack = Vec::new();
     let mut visited = HashSet::new();
     let mut nodes_visited = 0;
@@ -192,6 +195,8 @@ fn solve_dfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
 }
 
 fn solve_astar(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
+    println!("Solving using a-star...");
+
     let mut heap = std::collections::BinaryHeap::new();
     let mut visited = HashSet::new();
     let mut nodes_visited = 0;
@@ -314,6 +319,7 @@ fn is_solvable_flat(board: [u8; 9]) -> bool {
     inversions % 2 == 0
 }
 
+#[cfg(feature = "gui")]
 #[tokio::main]
 async fn main() -> glib::ExitCode {
     let app = Application::builder()
@@ -440,4 +446,47 @@ async fn main() -> glib::ExitCode {
     });
 
     app.run()
+}
+
+#[cfg(feature = "tui")]
+fn main() {
+    use std::time::Instant;
+
+    let board = Arc::new(AtomicCell::new([[1, 2, 3], [4, 5, 6], [7, 8, 0]]));
+
+    println!("Initial board: {:?}", board.load());
+
+    let b = board.load();
+    let mut b = [
+        b[0][0], b[0][1], b[0][2], b[1][0], b[1][1], b[1][2], b[2][0], b[2][1], b[2][2],
+    ];
+
+    b.shuffle(&mut rand::rng());
+    while !is_solvable_flat(b) {
+        b.shuffle(&mut rand::rng());
+    }
+    board.store([[b[0], b[1], b[2]], [b[3], b[4], b[5]], [b[6], b[7], b[8]]]);
+
+    println!("After shuffle: {:?}", board.load());
+
+    let state = State::new(board.load());
+    println!("Initial state: {:?}", state);
+
+    let start = Instant::now();
+
+    #[cfg(feature = "astar")]
+    let (state, moves, nodes_visited) = solve_astar(board.load());
+
+    #[cfg(feature = "bfs")]
+    let (state, moves, nodes_visited) = solve_bfs(board.load());
+
+    #[cfg(feature = "dfs")]
+    let (state, moves, nodes_visited) = solve_dfs(board.load());
+
+    let end = start.elapsed();
+
+    println!("Took {:?}", end);
+    println!("Final state: {:?}", state);
+    println!("Moves made: {:?}", moves);
+    println!("Nodes visited: {:?}", nodes_visited);
 }
