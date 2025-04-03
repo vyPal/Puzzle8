@@ -1,9 +1,7 @@
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    collections::{HashSet, VecDeque},
-    sync::Arc,
-};
+use std::{cmp::Ordering, collections::HashSet, sync::Arc};
+
+#[cfg(feature = "tui")]
+use std::{cell::Cell, collections::VecDeque};
 
 use crossbeam::atomic::AtomicCell;
 use rand::prelude::SliceRandom;
@@ -138,6 +136,7 @@ fn manhattan_distance(board: [[u8; 3]; 3]) -> u32 {
     distance
 }
 
+#[cfg(feature = "bfs")]
 fn solve_bfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     println!("Solving using bfs...");
     let mut queue = VecDeque::new();
@@ -166,6 +165,7 @@ fn solve_bfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     panic!("No solution found");
 }
 
+#[cfg(feature = "dfs")]
 fn solve_dfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     println!("Solving using dfs...");
     let mut stack = Vec::new();
@@ -194,6 +194,7 @@ fn solve_dfs(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     panic!("No solution found");
 }
 
+#[cfg(feature = "astar")]
 fn solve_astar(board: [[u8; 3]; 3]) -> (State, Vec<Move>, u32) {
     println!("Solving using a-star...");
 

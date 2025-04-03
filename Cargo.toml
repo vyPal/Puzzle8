@@ -15,7 +15,7 @@ features = ["v4_14"]
 optional = true
 
 [features]
-default = ["gui", "astar"]
+default = ["gui"]
 gui = ["dep:gtk"]
 tui = []
 astar = []
